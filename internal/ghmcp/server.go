@@ -527,19 +527,23 @@ func newGHESHost(hostname string) (apiHost, error) {
 
 // checkSubdomainIsolation detects if GitHub Enterprise Server has subdomain isolation enabled
 // by attempting to ping the raw.<host>/_ping endpoint on the subdomain. The raw subdomain must always exist for subdomain isolation.
+
+// subdomainCheckClient is a shared http.Client for checking subdomain isolation.
+// It's defined as a package-level variable to enable TCP connection reuse,
+// which is more performant than creating a new client for each check.
+var subdomainCheckClient = &http.Client{
+	Timeout: 5 * time.Second,
+	// Don't follow redirects - we just want to check if the endpoint exists
+	//nolint:revive // parameters are required by http.Client.CheckRedirect signature
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 func checkSubdomainIsolation(scheme, hostname string) bool {
 	subdomainURL := fmt.Sprintf("%s://raw.%s/_ping", scheme, hostname)
 
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		// Don't follow redirects - we just want to check if the endpoint exists
-		//nolint:revive // parameters are required by http.Client.CheckRedirect signature
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	resp, err := client.Get(subdomainURL)
+	resp, err := subdomainCheckClient.Get(subdomainURL)
 	if err != nil {
 		return false
 	}
