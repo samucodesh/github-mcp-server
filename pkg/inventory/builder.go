@@ -232,32 +232,42 @@ func (b *Builder) processToolsets() (map[ToolsetID]bool, []string, []ToolsetID, 
 		toolsetIDs = []string{"default"}
 	}
 
-	// Expand "default" keyword, trim whitespace, collect other IDs, and track unrecognized
+	// Expand "default" keyword, trim whitespace, collect other IDs, and track unrecognized.
+	// This is done in O(I+D) time (I = input toolsets, D = default toolsets)
+	// by first processing the raw input and then separately expanding defaults,
+	// avoiding a nested loop.
 	seen := make(map[ToolsetID]bool)
 	expanded := make([]ToolsetID, 0, len(toolsetIDs))
 	var unrecognized []string
+	hasDefault := false
 
+	// First pass (O(I)): process non-default toolsets and flag if "default" is present.
 	for _, id := range toolsetIDs {
 		trimmed := strings.TrimSpace(id)
 		if trimmed == "" {
 			continue
 		}
 		if trimmed == "default" {
-			for _, defaultID := range defaultToolsetIDList {
-				if !seen[defaultID] {
-					seen[defaultID] = true
-					expanded = append(expanded, defaultID)
-				}
+			hasDefault = true
+			continue
+		}
+
+		tsID := ToolsetID(trimmed)
+		if !seen[tsID] {
+			seen[tsID] = true
+			expanded = append(expanded, tsID)
+			if !validIDs[tsID] {
+				unrecognized = append(unrecognized, trimmed)
 			}
-		} else {
-			tsID := ToolsetID(trimmed)
-			if !seen[tsID] {
-				seen[tsID] = true
-				expanded = append(expanded, tsID)
-				// Track if this toolset doesn't exist
-				if !validIDs[tsID] {
-					unrecognized = append(unrecognized, trimmed)
-				}
+		}
+	}
+
+	// Second pass (O(D)): if "default" was seen, expand default toolsets.
+	if hasDefault {
+		for _, defaultID := range defaultToolsetIDList {
+			if !seen[defaultID] {
+				seen[defaultID] = true
+				expanded = append(expanded, defaultID)
 			}
 		}
 	}
