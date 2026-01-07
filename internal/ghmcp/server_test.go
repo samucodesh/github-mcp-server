@@ -1,6 +1,9 @@
 package ghmcp
 
 import (
+	"fmt"
+	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"github.com/github/github-mcp-server/pkg/translations"
@@ -109,4 +112,61 @@ func TestResolveEnabledToolsets(t *testing.T) {
 			assert.Equal(t, tc.expectedResult, result)
 		})
 	}
+}
+
+// mockRoundTripper is a custom http.RoundTripper for testing.
+type mockRoundTripper struct {
+	roundTripFunc func(req *http.Request) (*http.Response, error)
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.roundTripFunc(req)
+}
+
+// TestCheckSubdomainIsolation_CachesResult verifies that the checkSubdomainIsolation
+// function caches the result and only makes one network request for the same host.
+func TestCheckSubdomainIsolation_CachesResult(t *testing.T) {
+	t.Parallel()
+
+	var requestCount int32
+	var lastRequestURL string
+	scheme := "https"
+	hostname := "test.ghes.com"
+	expectedURL := "https://raw.test.ghes.com/_ping"
+
+	// Create a custom RoundTripper to intercept requests
+	rt := &mockRoundTripper{
+		roundTripFunc: func(req *http.Request) (*http.Response, error) {
+			atomic.AddInt32(&requestCount, 1)
+			lastRequestURL = req.URL.String()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       http.NoBody,
+			}, nil
+		},
+	}
+
+	client := &http.Client{Transport: rt}
+
+	// Clear cache before running the test to ensure isolation
+	cacheKey := fmt.Sprintf("%s://%s", scheme, hostname)
+	subdomainIsolationCacheMutex.Lock()
+	delete(subdomainIsolationCache, cacheKey)
+	subdomainIsolationCacheMutex.Unlock()
+
+	// First call - should make a network request
+	result1 := checkSubdomainIsolation(client, scheme, hostname)
+	assert.True(t, result1, "expected first call to return true")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&requestCount), "expected one network request after first call")
+	assert.Equal(t, expectedURL, lastRequestURL, "unexpected URL requested")
+
+	// Second call - should use the cache
+	result2 := checkSubdomainIsolation(client, scheme, hostname)
+	assert.True(t, result2, "expected second call to return true")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&requestCount), "expected still one network request after second call")
+
+	// Third call - should still use the cache
+	result3 := checkSubdomainIsolation(client, scheme, hostname)
+	assert.True(t, result3, "expected third call to return true")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&requestCount), "expected still one network request after third call")
 }
