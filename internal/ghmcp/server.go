@@ -22,8 +22,24 @@ import (
 	"github.com/github/github-mcp-server/pkg/scopes"
 	"github.com/github/github-mcp-server/pkg/translations"
 	gogithub "github.com/google/go-github/v79/github"
+	"sync"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/shurcooL/githubv4"
+)
+
+// subdomainIsolationCacheEntry holds the cached result and its expiration time.
+type subdomainIsolationCacheEntry struct {
+	hasSubdomainIsolation bool
+	expiresAt             time.Time
+}
+
+// subdomainIsolationCache caches the results of checkSubdomainIsolation to avoid
+// repeated network requests for the same host.
+var (
+	subdomainIsolationCache      = make(map[string]subdomainIsolationCacheEntry)
+	subdomainIsolationCacheMutex = &sync.RWMutex{}
+	subdomainIsolationCacheTTL   = 10 * time.Minute
 )
 
 type MCPServerConfig struct {
@@ -520,7 +536,15 @@ func newGHESHost(hostname string) (apiHost, error) {
 
 	// Check if subdomain isolation is enabled
 	// See https://docs.github.com/en/enterprise-server@3.17/admin/configuring-settings/hardening-security-for-your-enterprise/enabling-subdomain-isolation#about-subdomain-isolation
-	hasSubdomainIsolation := checkSubdomainIsolation(u.Scheme, u.Hostname())
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		// Don't follow redirects - we just want to check if the endpoint exists
+		//nolint:revive // parameters are required by http.Client.CheckRedirect signature
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	hasSubdomainIsolation := checkSubdomainIsolation(client, u.Scheme, u.Hostname())
 
 	var uploadURL *url.URL
 	if hasSubdomainIsolation {
@@ -556,25 +580,46 @@ func newGHESHost(hostname string) (apiHost, error) {
 
 // checkSubdomainIsolation detects if GitHub Enterprise Server has subdomain isolation enabled
 // by attempting to ping the raw.<host>/_ping endpoint on the subdomain. The raw subdomain must always exist for subdomain isolation.
-func checkSubdomainIsolation(scheme, hostname string) bool {
-	subdomainURL := fmt.Sprintf("%s://raw.%s/_ping", scheme, hostname)
+// The result is cached in memory for 10 minutes to avoid repeated network requests for the same host.
+func checkSubdomainIsolation(client *http.Client, scheme, hostname string) bool {
+	cacheKey := fmt.Sprintf("%s://%s", scheme, hostname)
 
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		// Don't follow redirects - we just want to check if the endpoint exists
-		//nolint:revive // parameters are required by http.Client.CheckRedirect signature
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	// Check cache first (read lock)
+	subdomainIsolationCacheMutex.RLock()
+	entry, found := subdomainIsolationCache[cacheKey]
+	subdomainIsolationCacheMutex.RUnlock()
+
+	if found && time.Now().Before(entry.expiresAt) {
+		return entry.hasSubdomainIsolation
 	}
 
+	// If not found or expired, perform the check (write lock)
+	subdomainIsolationCacheMutex.Lock()
+	defer subdomainIsolationCacheMutex.Unlock()
+
+	// Double-check if another goroutine populated the cache while we were waiting for the lock
+	entry, found = subdomainIsolationCache[cacheKey]
+	if found && time.Now().Before(entry.expiresAt) {
+		return entry.hasSubdomainIsolation
+	}
+
+	subdomainURL := fmt.Sprintf("%s://raw.%s/_ping", scheme, hostname)
 	resp, err := client.Get(subdomainURL)
 	if err != nil {
+		subdomainIsolationCache[cacheKey] = subdomainIsolationCacheEntry{
+			hasSubdomainIsolation: false,
+			expiresAt:             time.Now().Add(subdomainIsolationCacheTTL),
+		}
 		return false
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode == http.StatusOK
+	hasSubdomainIsolation := resp.StatusCode == http.StatusOK
+	subdomainIsolationCache[cacheKey] = subdomainIsolationCacheEntry{
+		hasSubdomainIsolation: hasSubdomainIsolation,
+		expiresAt:             time.Now().Add(subdomainIsolationCacheTTL),
+	}
+	return hasSubdomainIsolation
 }
 
 // Note that this does not handle ports yet, so development environments are out.
