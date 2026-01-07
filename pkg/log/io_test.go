@@ -2,64 +2,97 @@ package log
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
-
-	"log/slog"
-
-	"github.com/stretchr/testify/assert"
 )
 
-func TestLoggedReadWriter(t *testing.T) {
-	t.Run("Read method logs and passes data", func(t *testing.T) {
-		// Setup
-		inputData := "test input data"
-		reader := strings.NewReader(inputData)
+func TestIOLogger(t *testing.T) {
+	in := &bytes.Buffer{}
+	out := &bytes.Buffer{}
+	logOut := &bytes.Buffer{}
 
-		// Create logger with buffer to capture output
-		var logBuffer bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{ReplaceAttr: removeTimeAttr}))
+	logger := slog.New(slog.NewTextHandler(logOut, nil))
+	ioLogger := NewIOLogger(in, out, logger)
 
-		lrw := NewIOLogger(reader, nil, logger)
+	// Test Read
+	in.WriteString("hello")
+	p := make([]byte, 5)
+	n, err := ioLogger.Read(p)
+	if err != nil {
+		t.Errorf("unexpected error on read: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("expected to read 5 bytes, got %d", n)
+	}
+	if string(p) != "hello" {
+		t.Errorf("expected to read 'hello', got '%s'", string(p))
+	}
+	if !strings.Contains(logOut.String(), "hello") {
+		t.Errorf("expected log to contain 'hello', got '%s'", logOut.String())
+	}
 
-		// Test Read
-		buf := make([]byte, 100)
-		n, err := lrw.Read(buf)
+	// Test Write
+	logOut.Reset()
+	n, err = ioLogger.Write([]byte("world"))
+	if err != nil {
+		t.Errorf("unexpected error on write: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("expected to write 5 bytes, got %d", n)
+	}
+	if out.String() != "world" {
+		t.Errorf("expected to write 'world', got '%s'", out.String())
+	}
+	if !strings.Contains(logOut.String(), "world") {
+		t.Errorf("expected log to contain 'world', got '%s'", logOut.String())
+	}
 
-		// Assertions
-		assert.NoError(t, err)
-		assert.Equal(t, len(inputData), n)
-		assert.Equal(t, inputData, string(buf[:n]))
-		assert.Contains(t, logBuffer.String(), "[stdin]")
-		assert.Contains(t, logBuffer.String(), inputData)
-	})
+	// Test Close
+	err = ioLogger.Close()
+	if err != nil {
+		t.Errorf("unexpected error on close: %v", err)
+	}
 
-	t.Run("Write method logs and passes data", func(t *testing.T) {
-		// Setup
-		outputData := "test output data"
-		var writeBuffer bytes.Buffer
+	// Test Read from closed
+	_, err = ioLogger.Read(p)
+	if err != io.EOF {
+		t.Errorf("expected EOF on read from closed, got %v", err)
+	}
 
-		// Create logger with buffer to capture output
-		var logBuffer bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{ReplaceAttr: removeTimeAttr}))
-
-		lrw := NewIOLogger(nil, &writeBuffer, logger)
-
-		// Test Write
-		n, err := lrw.Write([]byte(outputData))
-
-		// Assertions
-		assert.NoError(t, err)
-		assert.Equal(t, len(outputData), n)
-		assert.Equal(t, outputData, writeBuffer.String())
-		assert.Contains(t, logBuffer.String(), "[stdout]")
-		assert.Contains(t, logBuffer.String(), outputData)
-	})
+	// Test Write to closed
+	_, err = ioLogger.Write([]byte("world"))
+	if err != io.ErrClosedPipe {
+		t.Errorf("expected ErrClosedPipe on write to closed, got %v", err)
+	}
 }
 
-func removeTimeAttr(groups []string, a slog.Attr) slog.Attr {
-	if a.Key == slog.TimeKey && len(groups) == 0 {
-		return slog.Attr{}
+func TestRedaction(t *testing.T) {
+	in := &bytes.Buffer{}
+	out := &bytes.Buffer{}
+	logOut := &bytes.Buffer{}
+
+	logger := slog.New(slog.NewTextHandler(logOut, nil))
+	ioLogger := NewIOLogger(in, out, logger)
+
+	// Test Write with token
+	token := "ghp_123456789012345678901234567890123456"
+	input := `{"token":"` + token + `"}`
+	n, err := ioLogger.Write([]byte(input))
+	if err != nil {
+		t.Errorf("unexpected error on write: %v", err)
 	}
-	return a
+	if n != len(input) {
+		t.Errorf("expected to write %d bytes, got %d", len(input), n)
+	}
+	if out.String() != input {
+		t.Errorf("expected to write '%s', got '%s'", input, out.String())
+	}
+	if strings.Contains(logOut.String(), token) {
+		t.Errorf("expected log not to contain token, got '%s'", logOut.String())
+	}
+	if !strings.Contains(logOut.String(), "ghp_************************************") {
+		t.Errorf("expected log to contain redacted token, got '%s'", logOut.String())
+	}
 }
