@@ -2,8 +2,13 @@ package log
 
 import (
 	"io"
+	"regexp"
 
 	"log/slog"
+)
+
+var (
+	githubTokenPattern = regexp.MustCompile(`"(ghp_[a-zA-Z0-9]{36})"`)
 )
 
 // IOLogger is a wrapper around io.Reader and io.Writer that can be used
@@ -25,6 +30,10 @@ func NewIOLogger(r io.Reader, w io.Writer, logger *slog.Logger) *IOLogger {
 	}
 }
 
+func redact(data []byte) []byte {
+	return githubTokenPattern.ReplaceAll(data, []byte(`"ghp_************************************"`))
+}
+
 // Read reads data from the underlying io.Reader and logs it.
 func (l *IOLogger) Read(p []byte) (n int, err error) {
 	if l.reader == nil {
@@ -32,7 +41,7 @@ func (l *IOLogger) Read(p []byte) (n int, err error) {
 	}
 	n, err = l.reader.Read(p)
 	if n > 0 {
-		l.logger.Info("[stdin]: received bytes", "count", n, "data", string(p[:n]))
+		l.logger.Info("[stdin]: received bytes", "count", n, "data", string(redact(p[:n])))
 	}
 	return n, err
 }
@@ -42,7 +51,7 @@ func (l *IOLogger) Write(p []byte) (n int, err error) {
 	if l.writer == nil {
 		return 0, io.ErrClosedPipe
 	}
-	l.logger.Info("[stdout]: sending bytes", "count", len(p), "data", string(p))
+	l.logger.Info("[stdout]: sending bytes", "count", len(p), "data", string(redact(p)))
 	return l.writer.Write(p)
 }
 
@@ -54,6 +63,10 @@ func (l *IOLogger) Close() error {
 	if closer, ok := l.writer.(io.Closer); ok {
 		errWriter = closer.Close()
 	}
+
+	l.reader = nil
+	l.writer = nil
+
 	if errReader != nil {
 		return errReader
 	}
