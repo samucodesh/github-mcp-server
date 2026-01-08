@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -554,9 +555,19 @@ func newGHESHost(hostname string) (apiHost, error) {
 	}, nil
 }
 
+var subdomainIsolationCache sync.Map
+
 // checkSubdomainIsolation detects if GitHub Enterprise Server has subdomain isolation enabled
 // by attempting to ping the raw.<host>/_ping endpoint on the subdomain. The raw subdomain must always exist for subdomain isolation.
+//
+// ⚡ Bolt: To avoid a blocking 5-second network call on every startup, we memoize the result.
+// This prevents redundant checks for the same host within a single server run, speeding up initialization.
 func checkSubdomainIsolation(scheme, hostname string) bool {
+	cacheKey := fmt.Sprintf("%s://%s", scheme, hostname)
+	if enabled, ok := subdomainIsolationCache.Load(cacheKey); ok {
+		return enabled.(bool)
+	}
+
 	subdomainURL := fmt.Sprintf("%s://raw.%s/_ping", scheme, hostname)
 
 	client := &http.Client{
@@ -570,11 +581,14 @@ func checkSubdomainIsolation(scheme, hostname string) bool {
 
 	resp, err := client.Get(subdomainURL)
 	if err != nil {
+		subdomainIsolationCache.Store(cacheKey, false)
 		return false
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode == http.StatusOK
+	enabled := resp.StatusCode == http.StatusOK
+	subdomainIsolationCache.Store(cacheKey, enabled)
+	return enabled
 }
 
 // Note that this does not handle ports yet, so development environments are out.
