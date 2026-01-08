@@ -142,6 +142,12 @@ func (b *Builder) Build() *Inventory {
 		filters:           b.filters,
 	}
 
+	// Pre-compute tool map for O(1) lookup
+	r.toolsByName = make(map[string]*ServerTool, len(r.tools))
+	for i := range r.tools {
+		r.toolsByName[r.tools[i].Tool.Name] = &r.tools[i]
+	}
+
 	// Process toolsets and pre-compute metadata in a single pass
 	r.enabledToolsets, r.unrecognizedToolsets, r.toolsetIDs, r.toolsetIDSet, r.defaultToolsetIDs, r.toolsetDescriptions = b.processToolsets()
 
