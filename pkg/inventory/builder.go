@@ -134,12 +134,18 @@ func (b *Builder) WithFilter(filter ToolFilter) *Builder {
 func (b *Builder) Build() *Inventory {
 	r := &Inventory{
 		tools:             b.tools,
+		toolMap:           make(map[string]*ServerTool, len(b.tools)),
 		resourceTemplates: b.resourceTemplates,
 		prompts:           b.prompts,
 		deprecatedAliases: b.deprecatedAliases,
 		readOnly:          b.readOnly,
 		featureChecker:    b.featureChecker,
 		filters:           b.filters,
+	}
+
+	for i := range b.tools {
+		tool := &b.tools[i]
+		r.toolMap[tool.Tool.Name] = tool
 	}
 
 	// Process toolsets and pre-compute metadata in a single pass

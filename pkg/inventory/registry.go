@@ -27,6 +27,8 @@ import (
 type Inventory struct {
 	// tools holds all tools in this group (ordered for iteration)
 	tools []ServerTool
+	// toolMap provides O(1) lookup of tools by name
+	toolMap map[string]*ServerTool
 	// resourceTemplates holds all resource templates in this group (ordered for iteration)
 	resourceTemplates []ServerResourceTemplate
 	// prompts holds all prompts in this group (ordered for iteration)
@@ -238,10 +240,8 @@ func (r *Inventory) ResolveToolAliases(toolNames []string) (resolved []string, a
 // Returns the tool, its toolset ID, and an error if not found.
 // This searches ALL tools regardless of filters.
 func (r *Inventory) FindToolByName(toolName string) (*ServerTool, ToolsetID, error) {
-	for i := range r.tools {
-		if r.tools[i].Tool.Name == toolName {
-			return &r.tools[i], r.tools[i].Toolset.ID, nil
-		}
+	if tool, ok := r.toolMap[toolName]; ok {
+		return tool, tool.Toolset.ID, nil
 	}
 	return nil, "", NewToolDoesNotExistError(toolName)
 }
